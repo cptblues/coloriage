@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coloriage-poc-lot1"
+version = "0.1.0"
+description = "Baseline technique pour transformer une photo en palette CIELAB et régions connexes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "numpy>=1.26,<3",
+  "Pillow>=10,<13",
+  "scikit-learn>=1.4,<2",
+  "scipy>=1.11,<2",
+]
+
+[project.scripts]
+coloriage-lot1 = "coloriage_lot1.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

@@ -1,0 +1,7 @@
+numpy>=1.26,<3
+Pillow>=10,<13
+scikit-learn>=1.4,<2
+scipy>=1.11,<2
+
+# IA locale optionnelle :
+# python -m pip install "rembg[cpu]>=2.0.67,<3"

@@ -1,0 +1,12 @@
+.git
+.env*
+.next
+.sites-runtime
+.wrangler
+dist
+node_modules
+npm-debug.log*
+outputs
+poc4
+work
+

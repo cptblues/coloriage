@@ -1,0 +1,125 @@
+{
+  "schema_version": "3.0",
+  "source": {
+    "input_path": "/workspace/scratch/c8059e359944/coloriage-poc-lot3/examples/demo.png",
+    "format": "PNG",
+    "original_mode": "RGB",
+    "original_width": 960,
+    "original_height": 720,
+    "normalized_width": 960,
+    "normalized_height": 720,
+    "resized": false
+  },
+  "parameters": {
+    "colors": 8,
+    "max_side": 1200,
+    "sample_pixels": 100000,
+    "connectivity": 8,
+    "seed": 42,
+    "segmentation": "slic",
+    "superpixels": 900,
+    "compactness": 10.0,
+    "smoothing_radius": 1,
+    "merge_strategy": "balanced",
+    "color_tolerance": 35.0,
+    "page_format": "a4",
+    "orientation": "portrait",
+    "margin_mm": 12.0,
+    "min_region_area_mm2": 9.0,
+    "thin_width_mm": 1.5,
+    "legend_height_mm": 0.0,
+    "number_font_mm": 2.8,
+    "min_number_font_mm": 1.8,
+    "number_padding_mm": 0.45,
+    "line_width_mm": 0.25,
+    "title": "Démo Lot 3"
+  },
+  "print_geometry": {
+    "page_format": "a4",
+    "orientation": "portrait",
+    "page_width_mm": 210.0,
+    "page_height_mm": 297.0,
+    "margin_mm": 12.0,
+    "printable_width_mm": 186.0,
+    "printable_height_mm": 273.0,
+    "reserved_bottom_mm": 23.0,
+    "image_width_mm": 186.0,
+    "image_height_mm": 139.5,
+    "image_origin_x_mm": 12.0,
+    "image_origin_y_mm": 67.25,
+    "legend_origin_y_mm": 262.0,
+    "mm_per_pixel": 0.19375,
+    "pixel_area_mm2": 0.037539062500000005,
+    "min_region_area_mm2": 9.0,
+    "min_region_pixels": 240
+  },
+  "result": {
+    "requested_colors": 8,
+    "actual_colors": 8,
+    "pixel_count": 691200,
+    "regions_before": {
+      "count": 76,
+      "min_pixels": 1,
+      "max_pixels": 201921,
+      "median_pixels": 17.0,
+      "min_area_mm2": 0.037539062500000005,
+      "below_area_threshold_count": 45,
+      "below_area_threshold_percent": 59.21052631578947,
+      "thin_region_count": 44,
+      "thin_region_percent": 57.89473684210526
+    },
+    "regions_after": {
+      "count": 31,
+      "min_pixels": 240,
+      "max_pixels": 201921,
+      "median_pixels": 1493.0,
+      "min_area_mm2": 9.009375,
+      "below_area_threshold_count": 0,
+      "below_area_threshold_percent": 0.0,
+      "thin_region_count": 2,
+      "thin_region_percent": 6.451612903225806
+    },
+    "graph_before": {
+      "nodes": 76,
+      "edges": 155,
+      "mean_degree": 4.078947368421052,
+      "total_shared_boundary_pixels": 13269
+    },
+    "graph_after": {
+      "nodes": 31,
+      "edges": 59,
+      "mean_degree": 3.806451612903226,
+      "total_shared_boundary_pixels": 12644
+    },
+    "merge_count": 45,
+    "forced_merges_above_color_tolerance": 29,
+    "recolored_pixels": 935,
+    "recolored_pixel_percent": 0.13527199074074073,
+    "labeling": {
+      "region_count": 31,
+      "placed_count": 21,
+      "skipped_count": 10,
+      "coverage_percent": 67.74193548387096,
+      "skipped_region_ids": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        11,
+        12,
+        13,
+        14,
+        29
+      ]
+    }
+  },
+  "timings_ms": {
+    "normalization": 15.59,
+    "quantization": 1230.832,
+    "segmentation": 2447.39,
+    "graph_and_merge": 34.299,
+    "metrics": 210.892,
+    "total": 3939.07
+  }
+}

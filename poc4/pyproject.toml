@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coloriage-poc-lot31"
+version = "0.3.1"
+description = "POC hybride : masque IA local et coloriage mystère sujet/fond."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "numpy>=1.26,<3",
+  "Pillow>=10,<13",
+  "scikit-learn>=1.4,<2",
+  "scipy>=1.11,<2",
+]
+
+[project.optional-dependencies]
+ai = [
+  "rembg[cpu]>=2.0.67,<3",
+]
+
+[project.scripts]
+coloriage-lot3 = "coloriage_lot3.cli:main"
+coloriage-lot31 = "coloriage_lot3.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

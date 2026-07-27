@@ -1,0 +1,10 @@
+.venv
+__pycache__
+*.pyc
+examples/result-reference*
+poc1
+poc2
+poc3
+results
+tmp*
+

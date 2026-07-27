@@ -1,0 +1,10 @@
+:80 {
+  handle_path /engine/* {
+    reverse_proxy engine:8765
+  }
+
+  handle {
+    reverse_proxy frontend:3000
+  }
+}
+
