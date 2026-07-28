@@ -292,7 +292,8 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result.subject_metadata["mode"], "manual")
             self.assertEqual(
                 stats["subject"]["subject_colors"]
-                + stats["subject"]["background_colors"],
+                + stats["subject"]["background_colors"]
+                - stats["subject"]["shared_colors"],
                 stats["result"]["actual_colors"],
             )
             self.assertGreater(stats["subject"]["subject_regions_after"], 0)

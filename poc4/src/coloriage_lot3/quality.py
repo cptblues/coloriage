@@ -50,6 +50,9 @@ def improve_region_labelability(
     strategy: str,
     color_tolerance: float,
     subject_mask: NDArray[np.bool_] | None,
+    edge_strength_map: NDArray[np.floating] | None = None,
+    edge_weight: float = 0.0,
+    edge_protection_threshold: float = 1.1,
     passes: int = 2,
 ) -> CleanMergeResult:
     """Merge thin strips before falling back to microscopic label fonts."""
@@ -98,6 +101,9 @@ def improve_region_labelability(
             color_tolerance=color_tolerance,
             region_min_pixels=thresholds,
             region_groups=_region_groups(current_labels, subject_mask),
+            edge_strength_map=edge_strength_map,
+            edge_weight=edge_weight,
+            edge_protection_threshold=edge_protection_threshold,
         )
         if not result.events:
             break

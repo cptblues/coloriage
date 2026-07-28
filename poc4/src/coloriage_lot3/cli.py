@@ -141,6 +141,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fusion perceptuelle des couleurs proches (défaut : 4,0)",
     )
     parser.add_argument(
+        "--palette-mode",
+        choices=("legacy", "adaptive", "exact"),
+        default="adaptive",
+        help="Palette v1, globale adaptative ou globale exacte",
+    )
+    parser.add_argument(
+        "--no-edge-guided-merge",
+        action="store_true",
+        help="Désactive la pénalisation des fusions à travers les contours",
+    )
+    parser.add_argument(
+        "--edge-merge-weight",
+        type=float,
+        default=22.0,
+        help="Poids des contours dans le score de fusion",
+    )
+    parser.add_argument(
+        "--edge-protection-threshold",
+        type=float,
+        default=0.72,
+        help="Seuil de protection des frontières fortes, de 0 à 1",
+    )
+    parser.add_argument(
         "--contour-simplify-mm",
         type=float,
         default=0.10,
@@ -283,6 +306,10 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
         number_padding_mm=args.number_padding_mm,
         line_width_mm=args.line_width_mm,
         palette_merge_delta_e=args.palette_merge_delta_e,
+        palette_mode=args.palette_mode,
+        edge_guided_merge=not args.no_edge_guided_merge,
+        edge_merge_weight=args.edge_merge_weight,
+        edge_protection_threshold=args.edge_protection_threshold,
         contour_simplify_mm=args.contour_simplify_mm,
         thin_merge_passes=args.thin_merge_passes,
         line_art_enabled=not args.no_line_art,

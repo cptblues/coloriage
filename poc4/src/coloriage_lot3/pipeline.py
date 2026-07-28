@@ -14,6 +14,7 @@ from sklearn.cluster import KMeans
 
 from .color import lab_to_rgb, rgb_to_lab
 from .detail import load_detail_mask
+from .edges import build_edge_strength_map
 from .geometry import (
     PrintGeometry,
     compute_legend_height_mm,
@@ -21,7 +22,7 @@ from .geometry import (
 )
 from .labeling import LabelPlacement, place_region_labels
 from .lineart import build_line_art_mask
-from .palette import merge_near_palette_colors
+from .palette import build_global_palette, merge_near_palette_colors
 from .preprocessing import prepare_processing_image
 from .quality import improve_region_labelability
 from .regions import (
@@ -68,6 +69,10 @@ class PipelineConfig:
     preprocess_sigma_color: float = 0.055
     preprocess_sigma_spatial: float = 3.0
     palette_merge_delta_e: float = 4.0
+    palette_mode: str = "adaptive"
+    edge_guided_merge: bool = True
+    edge_merge_weight: float = 22.0
+    edge_protection_threshold: float = 0.72
     thin_merge_passes: int = 2
     line_art_enabled: bool = True
     line_art_detail: float = 0.65
@@ -139,6 +144,12 @@ class PipelineConfig:
             raise ValueError("preprocess_sigma_spatial doit être compris entre 0,25 et 12")
         if not 0.0 <= self.palette_merge_delta_e <= 20.0:
             raise ValueError("palette_merge_delta_e doit être compris entre 0 et 20")
+        if self.palette_mode not in ("legacy", "adaptive", "exact"):
+            raise ValueError("palette_mode doit valoir legacy, adaptive ou exact")
+        if not 0.0 <= self.edge_merge_weight <= 100.0:
+            raise ValueError("edge_merge_weight doit être compris entre 0 et 100")
+        if not 0.0 <= self.edge_protection_threshold <= 1.0:
+            raise ValueError("edge_protection_threshold doit être compris entre 0 et 1")
         if not 0 <= self.thin_merge_passes <= 5:
             raise ValueError("thin_merge_passes doit être compris entre 0 et 5")
         if not 0.0 <= self.line_art_detail <= 1.0:
@@ -485,15 +496,34 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
     lab_image = rgb_to_lab(processing_rgb)
     pixels_lab = lab_image.reshape(-1, 3)
     palette_cleanup: dict[str, Any]
+    subject_palette_size = 0
     if subject_mask is None:
-        palette_lab, flat_labels = _fit_palette(pixels_lab, config)
-        palette_lab, flat_labels, palette_cleanup = merge_near_palette_colors(
-            palette_lab,
-            flat_labels,
-            threshold=config.palette_merge_delta_e,
-            minimum_colors=2,
-        )
-        subject_palette_size = 0
+        initial_centers, initial_labels = _fit_palette(pixels_lab, config)
+        if config.palette_mode == "legacy":
+            palette_lab, flat_labels, palette_cleanup = merge_near_palette_colors(
+                initial_centers,
+                initial_labels,
+                threshold=config.palette_merge_delta_e,
+                minimum_colors=2,
+            )
+            palette_cleanup = {"mode": "legacy", **palette_cleanup}
+        else:
+            global_palette = build_global_palette(
+                pixels_lab,
+                initial_centers,
+                initial_labels,
+                requested_colors=config.colors,
+                mode=config.palette_mode,
+                merge_threshold=config.palette_merge_delta_e,
+                importance_weights=(
+                    np.where(detail_mask.ravel(), 1.5, 1.0)
+                    if detail_mask is not None
+                    else None
+                ),
+            )
+            palette_lab = global_palette.centers_lab
+            flat_labels = global_palette.labels
+            palette_cleanup = global_palette.metadata
     else:
         flat_mask = subject_mask.ravel()
         subject_requested = max(2, round(config.colors * config.subject_color_ratio))
@@ -505,40 +535,70 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
             config,
             requested_colors=subject_requested,
         )
-        subject_lab, subject_labels, subject_cleanup = merge_near_palette_colors(
-            subject_lab,
-            subject_labels,
-            threshold=config.palette_merge_delta_e,
-            minimum_colors=2,
-        )
         background_lab, background_labels = _fit_palette(
             pixels_lab[~flat_mask],
             config,
             requested_colors=background_requested,
         )
-        background_lab, background_labels, background_cleanup = merge_near_palette_colors(
-            background_lab,
-            background_labels,
-            threshold=config.palette_merge_delta_e,
-            minimum_colors=2,
-        )
-        subject_palette_size = len(subject_lab)
-        palette_lab = np.concatenate([subject_lab, background_lab], axis=0)
-        flat_labels = np.empty(len(pixels_lab), dtype=np.int32)
-        flat_labels[flat_mask] = subject_labels
-        flat_labels[~flat_mask] = background_labels + subject_palette_size
-        palette_cleanup = {
-            "subject": subject_cleanup,
-            "background": background_cleanup,
-            "before": int(subject_cleanup["before"] + background_cleanup["before"]),
-            "after": int(subject_cleanup["after"] + background_cleanup["after"]),
-            "merged": int(subject_cleanup["merged"] + background_cleanup["merged"]),
-            "threshold": float(config.palette_merge_delta_e),
-        }
+        if config.palette_mode == "legacy":
+            subject_lab, subject_labels, subject_cleanup = merge_near_palette_colors(
+                subject_lab,
+                subject_labels,
+                threshold=config.palette_merge_delta_e,
+                minimum_colors=2,
+            )
+            background_lab, background_labels, background_cleanup = merge_near_palette_colors(
+                background_lab,
+                background_labels,
+                threshold=config.palette_merge_delta_e,
+                minimum_colors=2,
+            )
+            subject_palette_size = len(subject_lab)
+            palette_lab = np.concatenate([subject_lab, background_lab], axis=0)
+            flat_labels = np.empty(len(pixels_lab), dtype=np.int32)
+            flat_labels[flat_mask] = subject_labels
+            flat_labels[~flat_mask] = background_labels + subject_palette_size
+            palette_cleanup = {
+                "mode": "legacy",
+                "subject": subject_cleanup,
+                "background": background_cleanup,
+                "before": int(subject_cleanup["before"] + background_cleanup["before"]),
+                "after": int(subject_cleanup["after"] + background_cleanup["after"]),
+                "merged": int(subject_cleanup["merged"] + background_cleanup["merged"]),
+                "threshold": float(config.palette_merge_delta_e),
+            }
+        else:
+            initial_centers = np.concatenate([subject_lab, background_lab], axis=0)
+            initial_labels = np.empty(len(pixels_lab), dtype=np.int32)
+            initial_labels[flat_mask] = subject_labels
+            initial_labels[~flat_mask] = background_labels + len(subject_lab)
+            importance = np.where(flat_mask, 1.15, 1.0).astype(np.float64)
+            if detail_mask is not None:
+                importance[detail_mask.ravel()] *= 1.45
+            global_palette = build_global_palette(
+                pixels_lab,
+                initial_centers,
+                initial_labels,
+                requested_colors=config.colors,
+                mode=config.palette_mode,
+                merge_threshold=config.palette_merge_delta_e,
+                importance_weights=importance,
+            )
+            palette_lab = global_palette.centers_lab
+            flat_labels = global_palette.labels
+            palette_cleanup = global_palette.metadata
         subject_metadata.update(
             {
-                "subject_colors": int(subject_palette_size),
-                "background_colors": int(len(background_lab)),
+                "subject_colors": int(len(np.unique(flat_labels[flat_mask]))),
+                "background_colors": int(len(np.unique(flat_labels[~flat_mask]))),
+                "shared_colors": int(
+                    len(
+                        np.intersect1d(
+                            np.unique(flat_labels[flat_mask]),
+                            np.unique(flat_labels[~flat_mask]),
+                        )
+                    )
+                ),
             }
         )
     source_metadata["palette_cleanup"] = palette_cleanup
@@ -581,21 +641,28 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
             smoothing_radius=config.background_smoothing_radius,
         )
         if subject_mask is not None:
-            subject_segmented = np.where(
-                fine_segmented < subject_palette_size,
-                fine_segmented,
-                palette_labels,
-            )
-            background_segmented = np.where(
-                coarse_segmented >= subject_palette_size,
-                coarse_segmented,
-                palette_labels,
-            )
-            segmented_palette_labels = np.where(
-                subject_mask,
-                subject_segmented,
-                background_segmented,
-            ).astype(np.int32)
+            if config.palette_mode == "legacy":
+                subject_segmented = np.where(
+                    fine_segmented < subject_palette_size,
+                    fine_segmented,
+                    palette_labels,
+                )
+                background_segmented = np.where(
+                    coarse_segmented >= subject_palette_size,
+                    coarse_segmented,
+                    palette_labels,
+                )
+                segmented_palette_labels = np.where(
+                    subject_mask,
+                    subject_segmented,
+                    background_segmented,
+                ).astype(np.int32)
+            else:
+                segmented_palette_labels = np.where(
+                    subject_mask,
+                    fine_segmented,
+                    coarse_segmented,
+                ).astype(np.int32)
         else:
             segmented_palette_labels = coarse_segmented.astype(np.int32)
         if detail_mask is not None:
@@ -611,6 +678,20 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         connectivity=config.connectivity,
     )
     timings["segmentation"] = (time.perf_counter() - start) * 1000.0
+
+    edge_start = time.perf_counter()
+    edge_strength_map, edge_metadata = build_edge_strength_map(
+        processing_rgb,
+        subject_mask=subject_mask,
+        detail_mask=detail_mask,
+    )
+    source_metadata["edge_guidance"] = {
+        **edge_metadata,
+        "merge_enabled": bool(config.edge_guided_merge),
+        "weight": float(config.edge_merge_weight),
+        "protection_threshold": float(config.edge_protection_threshold),
+    }
+    timings["edge_guidance"] = (time.perf_counter() - edge_start) * 1000.0
 
     legend_height_mm = (
         0.0
@@ -693,6 +774,9 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         color_tolerance=config.color_tolerance,
         region_min_pixels=region_thresholds,
         region_groups=region_groups,
+        edge_strength_map=(edge_strength_map if config.edge_guided_merge else None),
+        edge_weight=(config.edge_merge_weight if config.edge_guided_merge else 0.0),
+        edge_protection_threshold=config.edge_protection_threshold,
     )
     region_labels_after = merge_result.region_labels
     region_palette_after = merge_result.region_palette
@@ -709,6 +793,9 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         strategy=config.merge_strategy,
         color_tolerance=config.color_tolerance,
         subject_mask=subject_mask,
+        edge_strength_map=(edge_strength_map if config.edge_guided_merge else None),
+        edge_weight=(config.edge_merge_weight if config.edge_guided_merge else 0.0),
+        edge_protection_threshold=config.edge_protection_threshold,
         passes=config.thin_merge_passes,
     )
     region_labels_after = clean_merge.region_labels
@@ -724,6 +811,14 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
     source_metadata["clean_merge"] = {
         "passes_executed": clean_merge.passes_executed,
         "extra_merges": len(clean_merge.events),
+        "high_edge_merges": int(
+            sum(event.edge_protected for event in merge_events)
+        ),
+        "mean_selected_edge_strength": float(
+            np.mean([event.mean_edge_strength for event in merge_events])
+            if merge_events
+            else 0.0
+        ),
     }
     merged_palette_labels = region_palette_after[region_labels_after]
     merged_rgb = palette_rgb[merged_palette_labels]

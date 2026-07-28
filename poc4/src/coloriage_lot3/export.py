@@ -286,6 +286,9 @@ def _save_merges_csv(result: PipelineResult, path: Path) -> None:
         "shared_boundary_pixels",
         "delta_e76",
         "forced_by_tolerance",
+        "mean_edge_strength",
+        "peak_edge_strength",
+        "edge_protected",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -293,6 +296,8 @@ def _save_merges_csv(result: PipelineResult, path: Path) -> None:
         for event in result.merge_events:
             row = asdict(event)
             row["delta_e76"] = round(row["delta_e76"], 5)
+            row["mean_edge_strength"] = round(row["mean_edge_strength"], 5)
+            row["peak_edge_strength"] = round(row["peak_edge_strength"], 5)
             writer.writerow(row)
 
 

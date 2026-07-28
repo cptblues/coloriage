@@ -10,6 +10,8 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
 
+from .edges import BoundaryGuidance, measure_region_boundaries
+
 IntArray = NDArray[np.integer]
 
 
@@ -53,6 +55,9 @@ class MergeEvent:
     shared_boundary_pixels: int
     delta_e76: float
     forced_by_tolerance: bool
+    mean_edge_strength: float = 0.0
+    peak_edge_strength: float = 0.0
+    edge_protected: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,7 @@ class MergeResult:
     region_palette: NDArray[np.int32]
     events: list[MergeEvent]
     forced_merges: int
+    high_edge_merges: int = 0
 
 
 def extract_connected_regions(
@@ -232,6 +238,9 @@ def merge_small_regions(
     color_tolerance: float,
     region_min_pixels: IntArray | None = None,
     region_groups: IntArray | None = None,
+    edge_strength_map: NDArray[np.floating] | None = None,
+    edge_weight: float = 0.0,
+    edge_protection_threshold: float = 1.1,
 ) -> MergeResult:
     """Fusionne les petites régions dans une voisine selon la stratégie choisie."""
     if strategy not in ("color", "boundary", "balanced"):
@@ -243,10 +252,28 @@ def merge_small_regions(
             region_palette=np.zeros(1, dtype=np.int32),
             events=[],
             forced_merges=0,
+            high_edge_merges=0,
         )
 
     edges = build_adjacency(region_labels)
     graph = _adjacency_dict(region_count, edges)
+    measured_guidance = (
+        measure_region_boundaries(region_labels, edge_strength_map)
+        if edge_strength_map is not None
+        else {}
+    )
+    empty_guidance = BoundaryGuidance(0, 0.0, 0.0)
+    edge_graph: dict[int, dict[int, BoundaryGuidance]] = {
+        region_id: {} for region_id in range(1, region_count + 1)
+    }
+    for edge in edges:
+        pair = (min(edge.region_a, edge.region_b), max(edge.region_a, edge.region_b))
+        evidence = measured_guidance.get(
+            pair,
+            BoundaryGuidance(edge.boundary_pixels, 0.0, 0.0),
+        )
+        edge_graph[edge.region_a][edge.region_b] = evidence
+        edge_graph[edge.region_b][edge.region_a] = evidence
     sizes = np.bincount(region_labels.ravel(), minlength=region_count + 1).astype(
         np.int64
     )
@@ -276,6 +303,7 @@ def merge_small_regions(
     heapq.heapify(queue)
     events: list[MergeEvent] = []
     forced_merges = 0
+    high_edge_merges = 0
 
     while queue:
         queued_size, source = heapq.heappop(queue)
@@ -284,7 +312,9 @@ def merge_small_regions(
         if sizes[source] >= thresholds[source] or not graph[source]:
             continue
 
-        candidates: list[tuple[tuple[float, ...], int, int, float]] = []
+        candidates: list[
+            tuple[tuple[float, ...], int, int, float, BoundaryGuidance, bool]
+        ] = []
         source_palette = int(palettes[source])
         same_group_neighbors = [
             target
@@ -301,19 +331,33 @@ def merge_small_regions(
             delta = float(
                 np.linalg.norm(palette_lab[source_palette] - palette_lab[target_palette])
             )
+            evidence = edge_graph[source].get(target, empty_guidance)
+            edge_mean = float(evidence.mean_strength)
+            edge_penalty = max(0.0, edge_weight) * edge_mean
+            protected = edge_mean >= edge_protection_threshold
+            boundary_gain = 8.0 * boundary / max(1.0, math.sqrt(sizes[source]))
             if strategy == "color":
-                key = (delta, -float(boundary), -float(sizes[target]))
+                key = (delta + edge_penalty, -float(boundary), -float(sizes[target]))
             elif strategy == "boundary":
-                key = (-float(boundary), delta, -float(sizes[target]))
+                key = (edge_penalty - boundary_gain, delta, -float(sizes[target]))
             else:
-                boundary_gain = 8.0 * boundary / max(1.0, math.sqrt(sizes[source]))
-                key = (delta - boundary_gain, delta, -float(boundary))
-            candidates.append((key, target, boundary, delta))
+                key = (
+                    delta + edge_penalty - boundary_gain,
+                    delta,
+                    -float(boundary),
+                )
+            candidates.append((key, target, boundary, delta, evidence, protected))
         if not candidates:
             continue
-        _, target, shared_boundary, delta_e = min(candidates, key=lambda item: item[0])
+        unprotected = [candidate for candidate in candidates if not candidate[5]]
+        selection_pool = unprotected or candidates
+        _, target, shared_boundary, delta_e, selected_evidence, protected = min(
+            selection_pool,
+            key=lambda item: item[0],
+        )
         forced = delta_e > color_tolerance
         forced_merges += int(forced)
+        high_edge_merges += int(protected)
         events.append(
             MergeEvent(
                 step=len(events) + 1,
@@ -325,20 +369,44 @@ def merge_small_regions(
                 shared_boundary_pixels=int(shared_boundary),
                 delta_e76=delta_e,
                 forced_by_tolerance=forced,
+                mean_edge_strength=float(selected_evidence.mean_strength),
+                peak_edge_strength=float(selected_evidence.peak_strength),
+                edge_protected=bool(protected),
             )
         )
 
         parent[source] = target
         active[source] = False
         graph[target].pop(source, None)
+        edge_graph[target].pop(source, None)
         for neighbor, boundary in list(graph[source].items()):
             if neighbor == target or not active[neighbor]:
                 continue
             graph[neighbor].pop(source, None)
+            source_evidence = edge_graph[source].get(neighbor, empty_guidance)
+            target_evidence = edge_graph[target].get(neighbor, empty_guidance)
+            edge_graph[neighbor].pop(source, None)
             combined = graph[target].get(neighbor, 0) + boundary
             graph[target][neighbor] = combined
             graph[neighbor][target] = combined
+            combined_evidence = BoundaryGuidance(
+                boundary_pixels=(
+                    target_evidence.boundary_pixels
+                    + source_evidence.boundary_pixels
+                ),
+                strength_sum=(
+                    target_evidence.strength_sum
+                    + source_evidence.strength_sum
+                ),
+                peak_strength=max(
+                    target_evidence.peak_strength,
+                    source_evidence.peak_strength,
+                ),
+            )
+            edge_graph[target][neighbor] = combined_evidence
+            edge_graph[neighbor][target] = combined_evidence
         graph[source].clear()
+        edge_graph[source].clear()
         sizes[target] += sizes[source]
         sizes[source] = 0
         thresholds[target] = max(thresholds[target], thresholds[source])
@@ -371,6 +439,7 @@ def merge_small_regions(
         region_palette=merged_palette,
         events=events,
         forced_merges=forced_merges,
+        high_edge_merges=high_edge_merges,
     )
 
 

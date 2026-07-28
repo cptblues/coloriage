@@ -405,6 +405,16 @@ def _config_from_payload(
         preprocess_sigma_color=0.055,
         preprocess_sigma_spatial=3.0,
         palette_merge_delta_e=_clamp_float(payload.get("paletteMergeDeltaE"), 0.0, 12.0, 4.0),
+        palette_mode=(
+            str(payload.get("paletteMode") or "adaptive")
+            if str(payload.get("paletteMode") or "adaptive") in {"legacy", "adaptive", "exact"}
+            else "adaptive"
+        ),
+        edge_guided_merge=_bool_config(payload.get("edgeGuidedMerge"), True),
+        edge_merge_weight=_clamp_float(payload.get("edgeMergeWeight"), 0.0, 100.0, 22.0),
+        edge_protection_threshold=_clamp_float(
+            payload.get("edgeProtectionThreshold"), 0.0, 1.0, 0.72
+        ),
         thin_merge_passes=_clamp_int(payload.get("thinMergePasses"), 0, 5, 2),
         line_art_enabled=_bool_config(payload.get("lineArtEnabled"), True),
         line_art_detail=_clamp_float(payload.get("lineArtDetail"), 0.0, 1.0, 0.65),

@@ -61,9 +61,18 @@ def _profile(name: str) -> PipelineConfig:
                           auto_tune=False, line_art_enabled=True)
     if name == "legacy":
         return replace(base, segmentation="slic_legacy", palette_merge_delta_e=0.0,
+                       palette_mode="legacy", edge_guided_merge=False,
                        thin_merge_passes=0, line_art_enabled=False)
     if name == "v1":
-        return replace(base, segmentation="slic")
+        return replace(
+            base, segmentation="slic", palette_mode="legacy",
+            edge_guided_merge=False,
+        )
+    if name == "v2":
+        return replace(
+            base, segmentation="slic", palette_mode="adaptive",
+            edge_guided_merge=True,
+        )
     raise ValueError(name)
 
 
@@ -87,7 +96,7 @@ def _metrics(result: Any, stats: dict[str, Any]) -> dict[str, Any]:
 
 def run_benchmark(output: Path, assert_quality: bool = False) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
-    report: dict[str, Any] = {"schema_version": "1.0", "profiles": ["legacy", "v1"], "fixtures": {}}
+    report: dict[str, Any] = {"schema_version": "1.1", "profiles": ["legacy", "v1", "v2"], "fixtures": {}}
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         for name, builder in FIXTURES.items():
@@ -98,7 +107,7 @@ def run_benchmark(output: Path, assert_quality: bool = False) -> dict[str, Any]:
             (fixture_dir / "source.png").write_bytes(source.read_bytes())
             previews = []
             data = {}
-            for profile_name in ("legacy", "v1"):
+            for profile_name in ("legacy", "v1", "v2"):
                 started = time.perf_counter()
                 result = run_pipeline(source, _profile(profile_name))
                 profile_dir = fixture_dir / profile_name
@@ -111,18 +120,18 @@ def run_benchmark(output: Path, assert_quality: bool = False) -> dict[str, Any]:
                 (profile_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
                 previews.append(Image.open(paths["coloring_preview"]).convert("RGB"))
             width, height = max(i.width for i in previews), max(i.height for i in previews)
-            comparison = Image.new("RGB", (width * 2, height), "white")
+            comparison = Image.new("RGB", (width * len(previews), height), "white")
             for index, preview in enumerate(previews):
                 comparison.paste(preview, (index * width, 0))
             comparison.save(fixture_dir / "comparison.png")
             report["fixtures"][name] = data
     violations = []
     for name, data in report["fixtures"].items():
-        v1 = data["v1"]
-        if v1["skipped_count"] != 0: violations.append(f"{name}: numéros ignorés")
-        if v1["coverage_percent"] != 100.0: violations.append(f"{name}: couverture < 100 %")
-        if v1["actual_colors"] < 2: violations.append(f"{name}: palette invalide")
-        if v1["regions_after"] < 1: violations.append(f"{name}: aucune région")
+        v2 = data["v2"]
+        if v2["skipped_count"] != 0: violations.append(f"{name}: numéros ignorés")
+        if v2["coverage_percent"] != 100.0: violations.append(f"{name}: couverture < 100 %")
+        if v2["actual_colors"] < 2: violations.append(f"{name}: palette invalide")
+        if v2["regions_after"] < 1: violations.append(f"{name}: aucune région")
     report["violations"] = violations
     (output / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     if assert_quality and violations:

@@ -15,8 +15,8 @@ class BenchmarkTests(unittest.TestCase):
             self.assertTrue((output / "report.json").is_file())
             self.assertFalse(report["violations"])
             for fixture in report["fixtures"].values():
-                self.assertEqual(fixture["v1"]["skipped_count"], 0)
-                self.assertEqual(fixture["v1"]["coverage_percent"], 100.0)
+                self.assertEqual(fixture["v2"]["skipped_count"], 0)
+                self.assertEqual(fixture["v2"]["coverage_percent"], 100.0)
 
 
 if __name__ == "__main__":
