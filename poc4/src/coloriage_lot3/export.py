@@ -14,7 +14,7 @@ from scipy import ndimage
 
 from .pipeline import PipelineResult
 from .regions import AdjacencyEdge, Region, make_region_preview
-from .svg import region_contour_loops, save_svgs
+from .svg import adaptive_render_profile, region_contour_loops, save_svgs
 from .subject import mask_overlay
 
 
@@ -70,6 +70,16 @@ def build_stats(result: PipelineResult) -> dict[str, Any]:
         placement.status == "placed" for placement in result.label_placements
     )
     skipped = len(result.label_placements) - placed
+    placed_fonts = [
+        placement.font_size_mm
+        for placement in result.label_placements
+        if placement.status == "placed"
+    ]
+    reduced_font_count = sum(
+        font_size + 1e-9 < result.config.min_number_font_mm
+        for font_size in placed_fonts
+    )
+    render_profile = adaptive_render_profile(result)
     subject_stats: dict[str, Any] = dict(result.subject_metadata)
     detail_stats: dict[str, Any] = dict(result.detail_metadata)
     if result.subject_mask is not None:
@@ -111,7 +121,7 @@ def build_stats(result: PipelineResult) -> dict[str, Any]:
             }
         )
     return {
-        "schema_version": "3.3",
+        "schema_version": "3.4",
         "source": result.source_metadata,
         "subject": subject_stats,
         "detail": detail_stats,
@@ -151,6 +161,16 @@ def build_stats(result: PipelineResult) -> dict[str, Any]:
                     for placement in result.label_placements
                     if placement.status != "placed"
                 ],
+                "reduced_font_count": int(reduced_font_count),
+                "smallest_font_mm": (
+                    float(min(placed_fonts)) if placed_fonts else 0.0
+                ),
+            },
+            "rendering": {
+                "effective_line_width_mm": render_profile.line_width_mm,
+                "smoothing_iterations": render_profile.smoothing_iterations,
+                "min_smooth_area_px": render_profile.min_smooth_area_px,
+                "preview_supersampling": render_profile.preview_supersampling,
             },
         },
         "timings_ms": {
@@ -341,14 +361,15 @@ def _draw_print_contours(
     pixels_per_mm: float,
 ) -> None:
     geometry = result.print_geometry
-    line_width_px = max(1, round(result.config.line_width_mm * pixels_per_mm))
+    render_profile = adaptive_render_profile(result)
+    line_width_px = max(1, round(render_profile.line_width_mm * pixels_per_mm))
     for region in result.regions_after:
         loops = region_contour_loops(
             result.region_labels_after,
             region.region_id,
             (region.min_x, region.min_y, region.max_x, region.max_y),
-            smoothing_iterations=result.config.contour_smoothing_iterations,
-            min_smooth_area_px=result.config.min_contour_smooth_area_px,
+            smoothing_iterations=render_profile.smoothing_iterations,
+            min_smooth_area_px=render_profile.min_smooth_area_px,
         )
         for loop in loops:
             if len(loop) < 2:
@@ -384,6 +405,18 @@ def _make_print_preview(
 ) -> Image.Image:
     """Rend un aperçu bitmap de la page physique sans dépendance SVG externe."""
     geometry = result.print_geometry
+    output_pixels_per_mm = pixels_per_mm
+    output_page_size = (
+        round(geometry.page_width_mm * output_pixels_per_mm),
+        round(geometry.page_height_mm * output_pixels_per_mm),
+    )
+    render_profile = adaptive_render_profile(result)
+    supersampling = (
+        render_profile.preview_supersampling
+        if output_pixels_per_mm <= 6.0
+        else 1
+    )
+    pixels_per_mm = output_pixels_per_mm * supersampling
     page_size = (
         round(geometry.page_width_mm * pixels_per_mm),
         round(geometry.page_height_mm * pixels_per_mm),
@@ -471,6 +504,8 @@ def _make_print_preview(
                 font=legend_font,
                 anchor="lm",
             )
+    if supersampling > 1:
+        return canvas.resize(output_page_size, Image.Resampling.LANCZOS)
     return canvas
 
 

@@ -11,7 +11,7 @@ from coloriage_lot3.svg import region_svg_path
 
 
 class LabelingTests(unittest.TestCase):
-    def test_places_number_in_large_region_and_skips_thin_region(self) -> None:
+    def test_places_every_number_inside_including_thin_regions(self) -> None:
         labels = np.ones((20, 20), dtype=np.uint32)
         labels[:, 10:] = 2
         labels[:, 10] = 3
@@ -43,7 +43,11 @@ class LabelingTests(unittest.TestCase):
         statuses = {item.region_id: item.status for item in placements}
         self.assertEqual(statuses[1], "placed")
         self.assertEqual(statuses[2], "placed")
-        self.assertEqual(statuses[3], "skipped")
+        self.assertEqual(statuses[3], "placed")
+        thin = next(item for item in placements if item.region_id == 3)
+        self.assertGreater(thin.font_size_mm, 0.0)
+        self.assertLess(thin.font_size_mm, 1.8)
+        self.assertEqual(thin.reason, "police_reduite_sous_seuil")
 
     def test_number_size_grows_with_printed_area(self) -> None:
         labels = np.full((400, 400), 2, dtype=np.uint32)
@@ -78,7 +82,8 @@ class LabelingTests(unittest.TestCase):
         self.assertEqual(by_region[1].status, "placed")
         self.assertEqual(by_region[2].status, "placed")
         self.assertLess(by_region[1].font_size_mm, by_region[2].font_size_mm)
-        self.assertAlmostEqual(by_region[1].font_size_mm, 1.8)
+        self.assertGreater(by_region[1].font_size_mm, 0.0)
+        self.assertLessEqual(by_region[1].font_size_mm, 1.8)
         self.assertAlmostEqual(by_region[2].font_size_mm, 3.2)
 
     def test_svg_path_contains_closed_contours(self) -> None:

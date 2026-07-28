@@ -44,7 +44,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertTrue(path.is_file(), path)
 
             stats = json.loads(paths["stats"].read_text(encoding="utf-8"))
-            self.assertEqual(stats["schema_version"], "3.3")
+            self.assertEqual(stats["schema_version"], "3.4")
             self.assertEqual(
                 stats["result"]["regions_after"]["below_area_threshold_count"],
                 0,
@@ -52,6 +52,15 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(
                 stats["result"]["labeling"]["placed_count"],
                 len(result.regions_after),
+            )
+            self.assertEqual(stats["result"]["labeling"]["skipped_count"], 0)
+            self.assertEqual(
+                stats["result"]["labeling"]["coverage_percent"],
+                100.0,
+            )
+            self.assertIn(
+                "effective_line_width_mm",
+                stats["result"]["rendering"],
             )
             pdf = paths["pdf_document"].read_bytes()
             self.assertTrue(pdf.startswith(b"%PDF"))

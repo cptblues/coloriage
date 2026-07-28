@@ -60,9 +60,9 @@ def place_region_labels(
 ) -> list[LabelPlacement]:
     """Place chaque numéro au maximum de la transformée de distance.
 
-    Le numéro est réduit jusqu'à ``min_font_mm`` si nécessaire. Une région trop
-    étroite est explicitement marquée ``skipped`` au lieu de produire un numéro
-    illisible ou placé sur un contour.
+    ``min_font_mm`` est une taille de lisibilité recommandée, pas une limite
+    bloquante. Pour garantir une couverture de 100 %, le padding puis la police
+    sont réduits autant que nécessaire dans les régions très étroites.
     """
     if preferred_font_mm <= 0 or min_font_mm <= 0:
         raise ValueError("Les tailles de police doivent être positives")
@@ -96,11 +96,25 @@ def place_region_labels(
         local_y, local_x = candidates[candidate_index]
         x_px = float(xs.start + local_x + 0.5)
         y_px = float(ys.start + local_y + 0.5)
-        clearance_mm = max_distance_px * geometry.mm_per_pixel
+        # La transformée EDT mesure jusqu'au centre du premier pixel extérieur.
+        # Retirer un demi-pixel donne une estimation conservatrice de l'espace
+        # réellement disponible autour du centre du glyphe.
+        clearance_mm = max(
+            0.5 * geometry.mm_per_pixel,
+            (max_distance_px - 0.5) * geometry.mm_per_pixel,
+        )
         number = int(region_palette[region_id]) + 1
 
         digit_factor = max(1.0, 0.62 * len(str(number)))
-        usable_diameter_mm = max(0.0, 2.0 * clearance_mm - 2.0 * padding_mm)
+        available_diameter_mm = 2.0 * clearance_mm
+        adaptive_padding_mm = min(
+            padding_mm,
+            0.12 * available_diameter_mm,
+        )
+        usable_diameter_mm = max(
+            geometry.mm_per_pixel * 0.15,
+            available_diameter_mm - 2.0 * adaptive_padding_mm,
+        )
         target_font_mm = _area_scaled_font_mm(
             region,
             geometry,
@@ -111,28 +125,17 @@ def place_region_labels(
             target_font_mm,
             usable_diameter_mm / digit_factor,
         )
-        if fitted_font_mm + 1e-9 < min_font_mm:
-            placements.append(
-                LabelPlacement(
-                    region_id=region_id,
-                    palette_index=number - 1,
-                    number=number,
-                    status="skipped",
-                    reason="zone_trop_etroite",
-                    x_px=x_px,
-                    y_px=y_px,
-                    clearance_mm=clearance_mm,
-                    font_size_mm=0.0,
-                )
-            )
-            continue
         placements.append(
             LabelPlacement(
                 region_id=region_id,
                 palette_index=number - 1,
                 number=number,
                 status="placed",
-                reason="",
+                reason=(
+                    "police_reduite_sous_seuil"
+                    if fitted_font_mm + 1e-9 < min_font_mm
+                    else ""
+                ),
                 x_px=x_px,
                 y_px=y_px,
                 clearance_mm=clearance_mm,

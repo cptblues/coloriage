@@ -323,6 +323,30 @@ def _palette_payload(result: Any) -> list[dict[str, object]]:
     ]
 
 
+def _mask_payload(
+    normalized_rgb: Any,
+    source_metadata: dict[str, Any],
+    mask: Any | None,
+    subject_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    control_image = (
+        Image.fromarray(mask_overlay(normalized_rgb, mask), "RGB")
+        if mask is not None
+        else Image.fromarray(normalized_rgb, "RGB")
+    )
+    return {
+        "ok": True,
+        "source": source_metadata,
+        "subject": subject_metadata,
+        "subjectMaskImage": (
+            _image_to_data_url(Image.fromarray((mask.astype("uint8") * 255), "L"))
+            if mask is not None
+            else None
+        ),
+        "maskControlImage": _image_to_data_url(control_image),
+    }
+
+
 def _config_from_payload(
     payload: dict[str, Any],
     subject_mask_path: Path | None,
@@ -341,7 +365,7 @@ def _config_from_payload(
         page_format=_format_config(payload.get("format")),
         orientation=_orientation_config(payload.get("orientation")),
         palette_layout=_palette_layout_config(payload.get("paletteLayout")),
-        subject_mode="manual" if subject_mask_path else "ai",
+        subject_mode="manual" if subject_mask_path else "none",
         subject_mask_path=str(subject_mask_path) if subject_mask_path else None,
         ai_model=str(payload.get("aiModel") or "birefnet-general"),
         subject_color_ratio=0.68,
@@ -493,20 +517,32 @@ class EngineHandler(BaseHTTPRequestHandler):
             )
             max_side = self._request_max_side(payload, source_path)
             normalized_rgb, metadata = _load_and_normalize(source_path, max_side)
-            mask, subject_metadata = generate_ai_mask(
-                normalized_rgb,
-                str(payload.get("aiModel") or "birefnet-general"),
-            )
-            mask_image = Image.fromarray((mask.astype("uint8") * 255), "L")
-            control_image = Image.fromarray(mask_overlay(normalized_rgb, mask), "RGB")
+            try:
+                mask, subject_metadata = generate_ai_mask(
+                    normalized_rgb,
+                    str(payload.get("aiModel") or "birefnet-general"),
+                )
+            except ValueError as exc:
+                self._send_json(
+                    _mask_payload(
+                        normalized_rgb,
+                        metadata,
+                        None,
+                        {
+                            "mode": "none",
+                            "fallback": "global",
+                            "reason": "no_reliable_subject",
+                            "message": (
+                                "Aucun sujet isolable fiable détecté. "
+                                "Le coloriage sera généré globalement."
+                            ),
+                            "detail": str(exc),
+                        },
+                    )
+                )
+                return
             self._send_json(
-                {
-                    "ok": True,
-                    "source": metadata,
-                    "subject": subject_metadata,
-                    "subjectMaskImage": _image_to_data_url(mask_image),
-                    "maskControlImage": _image_to_data_url(control_image),
-                }
+                _mask_payload(normalized_rgb, metadata, mask, subject_metadata)
             )
 
     def _handle_generate(self) -> None:

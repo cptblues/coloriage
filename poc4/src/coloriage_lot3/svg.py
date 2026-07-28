@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,54 @@ from .pipeline import PipelineResult
 Point = tuple[int, int]
 FloatPoint = tuple[float, float]
 Edge = tuple[Point, Point]
+
+
+@dataclass(frozen=True)
+class RenderProfile:
+    """Paramètres de tracé dérivés de la taille imprimée et de la résolution."""
+
+    line_width_mm: float
+    smoothing_iterations: int
+    min_smooth_area_px: float
+    preview_supersampling: int
+
+
+def adaptive_render_profile(result: PipelineResult) -> RenderProfile:
+    """Adapte traits et lissage à la géométrie physique du document."""
+    geometry = result.print_geometry
+    page_scale = 1.12 if geometry.page_format == "a3" else 1.0
+    low_resolution_boost = max(
+        0.0,
+        min(0.06, (geometry.mm_per_pixel - 0.16) * 0.45),
+    )
+    line_width_mm = max(
+        0.18,
+        min(
+            0.42,
+            result.config.line_width_mm * page_scale + low_resolution_boost,
+        ),
+    )
+
+    smoothing_iterations = result.config.contour_smoothing_iterations
+    if geometry.mm_per_pixel >= 0.22:
+        smoothing_iterations = min(3, max(2, smoothing_iterations + 1))
+    else:
+        smoothing_iterations = max(1, smoothing_iterations)
+
+    min_physical_area_mm2 = max(
+        2.5,
+        min(8.0, result.config.min_region_area_mm2 * 0.4),
+    )
+    min_smooth_area_px = max(
+        result.config.min_contour_smooth_area_px,
+        min_physical_area_mm2 / max(geometry.pixel_area_mm2, 1e-9),
+    )
+    return RenderProfile(
+        line_width_mm=line_width_mm,
+        smoothing_iterations=smoothing_iterations,
+        min_smooth_area_px=min_smooth_area_px,
+        preview_supersampling=2,
+    )
 
 
 def _direction(start: Point, end: Point) -> int:
@@ -236,15 +285,16 @@ def _legend_svg(result: PipelineResult, colored: bool) -> str:
 def build_svg(result: PipelineResult, colored: bool) -> str:
     """Construit le modèle coloré ou la feuille de coloriage numérotée."""
     geometry = result.print_geometry
-    stroke_px = result.config.line_width_mm / geometry.mm_per_pixel
+    render_profile = adaptive_render_profile(result)
+    stroke_px = render_profile.line_width_mm / geometry.mm_per_pixel
     paths: list[str] = []
     for region in result.regions_after:
         path_data = region_svg_path(
             result.region_labels_after,
             region.region_id,
             (region.min_x, region.min_y, region.max_x, region.max_y),
-            smoothing_iterations=result.config.contour_smoothing_iterations,
-            min_smooth_area_px=result.config.min_contour_smooth_area_px,
+            smoothing_iterations=render_profile.smoothing_iterations,
+            min_smooth_area_px=render_profile.min_smooth_area_px,
         )
         if not path_data:
             continue
@@ -280,8 +330,8 @@ def build_svg(result: PipelineResult, colored: bool) -> str:
             mask_labels,
             1,
             (0, 0, mask_labels.shape[1] - 1, mask_labels.shape[0] - 1),
-            smoothing_iterations=result.config.contour_smoothing_iterations,
-            min_smooth_area_px=result.config.min_contour_smooth_area_px,
+            smoothing_iterations=render_profile.smoothing_iterations,
+            min_smooth_area_px=render_profile.min_smooth_area_px,
         )
         if mask_path:
             subject_outline = (

@@ -9,13 +9,48 @@ import numpy as np
 from PIL import Image
 
 from coloriage_lot3.server import (
+    _config_from_payload,
     _draw_detail_mask,
+    _mask_payload,
     _resolve_max_side,
     _result_payload,
 )
 
 
 class ServerDetailMaskTests(unittest.TestCase):
+    def test_generate_config_uses_global_mode_without_subject_mask(self) -> None:
+        config = _config_from_payload(
+            {
+                "colors": 12,
+                "complexity": "equilibre",
+                "format": "A4",
+                "orientation": "portrait",
+            },
+            None,
+            None,
+            1200,
+        )
+
+        self.assertEqual(config.subject_mode, "none")
+
+    def test_mask_payload_can_fallback_to_global_mode(self) -> None:
+        rgb = np.full((10, 12, 3), 180, dtype=np.uint8)
+        payload = _mask_payload(
+            rgb,
+            {"normalized_width": 12, "normalized_height": 10},
+            None,
+            {
+                "mode": "none",
+                "fallback": "global",
+                "reason": "no_reliable_subject",
+            },
+        )
+
+        self.assertEqual(payload["ok"], True)
+        self.assertIsNone(payload["subjectMaskImage"])
+        self.assertEqual(payload["subject"]["mode"], "none")
+        self.assertTrue(str(payload["maskControlImage"]).startswith("data:image/png"))
+
     def test_auto_max_side_uses_source_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

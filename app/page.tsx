@@ -45,6 +45,8 @@ type EngineResult = {
       labeling?: {
         placed_count?: number;
         skipped_count?: number;
+        coverage_percent?: number;
+        reduced_font_count?: number;
       };
     };
   };
@@ -249,6 +251,7 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [maskStatus, setMaskStatus] = useState<MaskStatus>("idle");
   const [maskError, setMaskError] = useState("");
+  const [maskNotice, setMaskNotice] = useState("");
   const [maskPreviewImage, setMaskPreviewImage] = useState<string | null>(null);
   const [subjectMaskImage, setSubjectMaskImage] = useState<string | null>(null);
   const [zones, setZones] = useState<DetailZone[]>([]);
@@ -292,6 +295,7 @@ export default function Home() {
     setFileName(file.name);
     setMaskStatus("idle");
     setMaskError("");
+    setMaskNotice("");
     setMaskPreviewImage(null);
     setSubjectMaskImage(null);
     setZones([]);
@@ -328,6 +332,7 @@ export default function Home() {
     if (!imagePayload || maskStatus === "loading") return;
     setMaskStatus("loading");
     setMaskError("");
+    setMaskNotice("");
     try {
       const response = await fetch(`${ENGINE_URL}/mask`, {
         method: "POST",
@@ -341,8 +346,17 @@ export default function Home() {
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || "Échec de l'isolation du fond.");
       }
-      setMaskPreviewImage(payload.maskControlImage);
-      setSubjectMaskImage(payload.subjectMaskImage);
+      const nextSubjectMask =
+        typeof payload.subjectMaskImage === "string" ? payload.subjectMaskImage : null;
+      setMaskPreviewImage(payload.maskControlImage || imageUrl);
+      setSubjectMaskImage(nextSubjectMask);
+      setMaskNotice(
+        typeof payload.subject?.message === "string"
+          ? payload.subject.message
+          : nextSubjectMask
+            ? "Sujet détecté : le fond sera simplifié plus fortement."
+            : "Aucun sujet net détecté : génération globale.",
+      );
       setMaskStatus("ready");
     } catch (error) {
       setMaskStatus("error");
@@ -352,7 +366,7 @@ export default function Home() {
           : "Le moteur Python local n'a pas répondu.",
       );
     }
-  }, [imagePayload, maskStatus]);
+  }, [imagePayload, imageUrl, maskStatus]);
 
   useEffect(() => {
     if (step === 1 && imagePayload && maskStatus === "idle") {
@@ -702,8 +716,9 @@ export default function Home() {
               <p className="step-kicker">Étape 2 · Isolation du fond</p>
               <h1>Vérifions le détourage.</h1>
               <p className="lead">
-                Le moteur local sépare automatiquement le sujet du fond avec
-                rembg. Le fond teinté sera simplifié plus fortement.
+                Si un sujet net est détecté, le moteur simplifie le fond plus
+                fortement. Pour un paysage, il peut aussi générer l’image
+                globalement.
               </p>
               <div className={`engine-status ${maskStatus}`}>
                 <span className={`status-dot ${maskStatus === "ready" ? "ready" : ""}`} />
@@ -712,7 +727,9 @@ export default function Home() {
                     {maskStatus === "loading"
                       ? "Isolation en cours"
                       : maskStatus === "ready"
-                        ? "Fond isolé"
+                        ? subjectMaskImage
+                          ? "Fond isolé"
+                          : "Traitement global"
                         : maskStatus === "error"
                           ? "Moteur indisponible"
                           : "En attente du moteur"}
@@ -720,7 +737,9 @@ export default function Home() {
                   <small>
                     {maskStatus === "error"
                       ? maskError
-                      : `Service attendu sur ${ENGINE_URL}`}
+                      : maskStatus === "ready"
+                        ? maskNotice
+                        : `Service attendu sur ${ENGINE_URL}`}
                   </small>
                 </div>
               </div>
@@ -752,7 +771,11 @@ export default function Home() {
               <div className="canvas-heading">
                 <div>
                   <span className={`status-dot ${maskStatus === "ready" ? "ready" : ""}`} />
-                  {maskStatus === "ready" ? "Contrôle du masque" : "Photo importée"}
+                  {maskStatus === "ready" && subjectMaskImage
+                    ? "Contrôle du masque"
+                    : maskStatus === "ready"
+                      ? "Traitement global"
+                      : "Photo importée"}
                 </div>
                 {maskStatus === "ready" && (
                   <button type="button" onClick={requestSubjectMask}>
@@ -994,7 +1017,13 @@ export default function Home() {
                 <dl>
                   <div>
                     <dt>Sujet</dt>
-                    <dd>{maskStatus === "ready" ? "isolé" : "à isoler"}</dd>
+                    <dd>
+                      {subjectMaskImage
+                        ? "isolé"
+                        : maskStatus === "ready"
+                          ? "global"
+                          : "à isoler"}
+                    </dd>
                   </div>
                   <div>
                     <dt>Zones détaillées</dt>
@@ -1055,8 +1084,11 @@ export default function Home() {
                   zones
                 </div>
                 <div>
-                  <strong>{format}</strong>
-                  prêt à imprimer
+                  <strong>
+                    {engineResult?.stats?.result?.labeling?.placed_count ?? "—"} /{" "}
+                    {engineResult?.regionsAfter ?? "—"}
+                  </strong>
+                  zones numérotées
                 </div>
               </div>
               <button
