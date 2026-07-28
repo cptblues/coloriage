@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import tempfile
 import time
 from dataclasses import replace
@@ -101,6 +102,8 @@ def run_benchmark(output: Path, assert_quality: bool = False) -> dict[str, Any]:
                 started = time.perf_counter()
                 result = run_pipeline(source, _profile(profile_name))
                 profile_dir = fixture_dir / profile_name
+                if profile_dir.exists():
+                    shutil.rmtree(profile_dir)
                 paths = export_result(result, profile_dir)
                 metrics = _metrics(result, build_stats(result))
                 metrics["wall_ms"] = (time.perf_counter() - started) * 1000.0
