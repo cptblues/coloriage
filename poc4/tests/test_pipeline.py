@@ -33,6 +33,9 @@ class PipelineTests(unittest.TestCase):
                 segmentation="components",
                 smoothing_radius=0,
                 min_region_area_mm2=20.0,
+                preprocess_sigma_color=0.001,
+                preprocess_sigma_spatial=0.25,
+                palette_merge_delta_e=0.0,
             )
             result = run_pipeline(source, config)
             paths = export_result(result, root / "output")

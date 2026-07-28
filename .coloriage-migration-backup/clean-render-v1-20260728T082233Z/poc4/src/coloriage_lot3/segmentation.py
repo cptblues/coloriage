@@ -1,22 +1,21 @@
-"""SLICO segmentation with a legacy fallback and palette-label voting."""
+"""Segmentation SLIC compacte et lissage de la carte de palette."""
 
 from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
-from skimage.segmentation import slic
 
 from .color import rgb_to_lab
 
 
-def _legacy_slic_labels(
+def _slic_labels(
     normalized_rgb: NDArray[np.uint8],
     target_segments: int,
     compactness: float,
     iterations: int = 6,
 ) -> NDArray[np.int32]:
-    """Original local SLIC implementation kept for A/B comparisons."""
+    """Implémentation locale du cœur de SLIC, sans dépendance supplémentaire."""
     height, width = normalized_rgb.shape[:2]
     pixel_count = height * width
     step = max(2.0, np.sqrt(pixel_count / target_segments))
@@ -64,7 +63,10 @@ def _legacy_slic_labels(
 
         flat_labels = labels.ravel()
         valid = flat_labels >= 0
-        counts = np.bincount(flat_labels[valid], minlength=len(centers)).astype(np.float64)
+        counts = np.bincount(
+            flat_labels[valid],
+            minlength=len(centers),
+        ).astype(np.float64)
         nonempty = counts > 0
         for channel in range(3):
             sums = np.bincount(
@@ -83,27 +85,6 @@ def _legacy_slic_labels(
     return labels
 
 
-def _slico_labels(
-    normalized_rgb: NDArray[np.uint8],
-    target_segments: int,
-    compactness: float,
-) -> NDArray[np.int32]:
-    image = normalized_rgb.astype(np.float32) / 255.0
-    return slic(
-        image,
-        n_segments=max(10, int(target_segments)),
-        compactness=float(compactness),
-        sigma=0.65,
-        convert2lab=True,
-        enforce_connectivity=True,
-        min_size_factor=0.45,
-        max_size_factor=3.0,
-        slic_zero=True,
-        start_label=0,
-        channel_axis=-1,
-    ).astype(np.int32)
-
-
 def segment_palette_labels(
     normalized_rgb: NDArray[np.uint8],
     palette_labels: NDArray[np.int32],
@@ -113,17 +94,17 @@ def segment_palette_labels(
     compactness: float,
     smoothing_radius: int,
 ) -> NDArray[np.int32]:
-    """Produce a spatially coherent palette map."""
-    if method not in ("components", "slic", "slic_legacy"):
-        raise ValueError("segmentation doit valoir components, slic ou slic_legacy")
+    """Produit une carte de couleurs spatialement cohérente."""
+    if method not in ("components", "slic"):
+        raise ValueError("segmentation doit valoir components ou slic")
 
     if method == "components":
         segmented = palette_labels.copy()
     else:
-        slic_labels = (
-            _legacy_slic_labels(normalized_rgb, superpixels, compactness)
-            if method == "slic_legacy"
-            else _slico_labels(normalized_rgb, superpixels, compactness)
+        slic_labels = _slic_labels(
+            normalized_rgb,
+            target_segments=superpixels,
+            compactness=compactness,
         )
         superpixel_count = int(slic_labels.max()) + 1
         combined = slic_labels.ravel() * palette_size + palette_labels.ravel()

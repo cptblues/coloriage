@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from skimage import measure
 
-from .lineart import trace_skeleton_polylines
 from .pipeline import PipelineResult
 
 Point = tuple[int, int]
@@ -26,11 +24,10 @@ class RenderProfile:
     smoothing_iterations: int
     min_smooth_area_px: float
     preview_supersampling: int
-    simplify_tolerance_px: float
 
 
 def adaptive_render_profile(result: PipelineResult) -> RenderProfile:
-    """Adapte traits, lissage et simplification à la géométrie physique."""
+    """Adapte traits et lissage à la géométrie physique du document."""
     geometry = result.print_geometry
     page_scale = 1.12 if geometry.page_format == "a3" else 1.0
     low_resolution_boost = max(
@@ -44,11 +41,13 @@ def adaptive_render_profile(result: PipelineResult) -> RenderProfile:
             result.config.line_width_mm * page_scale + low_resolution_boost,
         ),
     )
+
     smoothing_iterations = result.config.contour_smoothing_iterations
     if geometry.mm_per_pixel >= 0.22:
         smoothing_iterations = min(3, max(2, smoothing_iterations + 1))
     else:
         smoothing_iterations = max(1, smoothing_iterations)
+
     min_physical_area_mm2 = max(
         2.5,
         min(8.0, result.config.min_region_area_mm2 * 0.4),
@@ -57,17 +56,12 @@ def adaptive_render_profile(result: PipelineResult) -> RenderProfile:
         result.config.min_contour_smooth_area_px,
         min_physical_area_mm2 / max(geometry.pixel_area_mm2, 1e-9),
     )
-    simplify_tolerance_px = (
-        result.config.contour_simplify_mm / max(geometry.mm_per_pixel, 1e-9)
-    )
     return RenderProfile(
         line_width_mm=line_width_mm,
         smoothing_iterations=smoothing_iterations,
         min_smooth_area_px=min_smooth_area_px,
         preview_supersampling=2,
-        simplify_tolerance_px=simplify_tolerance_px,
     )
-
 
 
 def _direction(start: Point, end: Point) -> int:
@@ -214,45 +208,16 @@ def region_contour_loops(
     bounds: tuple[int, int, int, int],
     smoothing_iterations: int = 0,
     min_smooth_area_px: float = 18.0,
-    simplify_tolerance_px: float = 0.0,
 ) -> list[list[FloatPoint]]:
-    """Return closed subpixel contours, including holes."""
+    """Retourne les boucles de contour, lissées si la zone est assez grande."""
     min_x, min_y, max_x, max_y = bounds
     local = (
         region_labels[min_y : max_y + 1, min_x : max_x + 1] == region_id
     )
-    padded = np.pad(local.astype(np.float32), 1, mode="constant")
-    contours = measure.find_contours(
-        padded,
-        0.5,
-        fully_connected="high",
-        positive_orientation="low",
-    )
-    loops: list[list[FloatPoint]] = []
-    for contour in contours:
-        if len(contour) < 4:
-            continue
-        # Array coordinates describe pixel centres. Subtracting 0.5 after the
-        # padding maps the isoline back to physical pixel edges.
-        points = np.column_stack(
-            [
-                contour[:, 1] - 0.5 + min_x,
-                contour[:, 0] - 0.5 + min_y,
-            ]
-        )
-        if simplify_tolerance_px > 0 and len(points) >= 6:
-            points = measure.approximate_polygon(points, tolerance=simplify_tolerance_px)
-        loop = [(float(x), float(y)) for x, y in points]
-        if loop[0] != loop[-1]:
-            loop.append(loop[0])
-        if smoothing_iterations > 0 and _loop_area_px(loop) >= min_smooth_area_px:
-            loop = _smooth_loop(loop[:-1], smoothing_iterations, min_smooth_area_px)
-            if loop and loop[0] != loop[-1]:
-                loop.append(loop[0])
-        if len(loop) >= 4:
-            loops.append(loop)
-    return loops
-
+    return [
+        _smooth_loop(loop, smoothing_iterations, min_smooth_area_px)
+        for loop in _trace_edges(_mask_edges(local, min_x, min_y))
+    ]
 
 
 def region_svg_path(
@@ -261,16 +226,14 @@ def region_svg_path(
     bounds: tuple[int, int, int, int],
     smoothing_iterations: int = 0,
     min_smooth_area_px: float = 18.0,
-    simplify_tolerance_px: float = 0.0,
 ) -> str:
-    """Vectorise a region with subpixel contours and holes."""
+    """Vectorise le contour d'une région, trous inclus."""
     loops = region_contour_loops(
         region_labels,
         region_id,
         bounds,
         smoothing_iterations=smoothing_iterations,
         min_smooth_area_px=min_smooth_area_px,
-        simplify_tolerance_px=simplify_tolerance_px,
     )
     commands: list[str] = []
     for loop in loops:
@@ -282,7 +245,6 @@ def region_svg_path(
         )
         commands.append("Z")
     return " ".join(commands)
-
 
 
 def _hex(rgb: np.ndarray) -> str:
@@ -320,138 +282,12 @@ def _legend_svg(result: PipelineResult, colored: bool) -> str:
     return "\n".join(items)
 
 
-
-def _canonical_edge(start: FloatPoint, end: FloatPoint) -> tuple[FloatPoint, FloatPoint]:
-    return (start, end) if start <= end else (end, start)
-
-
-def _trace_unique_edges(
-    edges: set[tuple[FloatPoint, FloatPoint]],
-) -> list[list[FloatPoint]]:
-    graph: dict[FloatPoint, set[FloatPoint]] = {}
-    for start, end in edges:
-        graph.setdefault(start, set()).add(end)
-        graph.setdefault(end, set()).add(start)
-    unused = set(edges)
-
-    def has_edge(a: FloatPoint, b: FloatPoint) -> bool:
-        return _canonical_edge(a, b) in unused
-
-    def consume(a: FloatPoint, b: FloatPoint) -> None:
-        unused.discard(_canonical_edge(a, b))
-
-    def walk(start: FloatPoint, next_point: FloatPoint) -> list[FloatPoint]:
-        path = [start, next_point]
-        consume(start, next_point)
-        previous = start
-        current = next_point
-        while True:
-            candidates = [
-                point
-                for point in graph[current]
-                if point != previous and has_edge(current, point)
-            ]
-            if not candidates or (len(graph[current]) != 2 and current != start):
-                break
-            chosen = min(candidates)
-            consume(current, chosen)
-            previous, current = current, chosen
-            path.append(current)
-            if current == start:
-                break
-        return path
-
-    paths: list[list[FloatPoint]] = []
-    junctions = sorted(point for point, neighbors in graph.items() if len(neighbors) != 2)
-    for point in junctions:
-        for neighbor in sorted(graph[point]):
-            if has_edge(point, neighbor):
-                paths.append(walk(point, neighbor))
-    while unused:
-        start, end = next(iter(unused))
-        paths.append(walk(start, end))
-    return paths
-
-
-def shared_boundary_polylines(
-    region_labels: np.ndarray,
-    *,
-    smoothing_iterations: int = 0,
-    simplify_tolerance_px: float = 0.0,
-) -> list[list[FloatPoint]]:
-    """Trace every shared boundary and page edge exactly once."""
-    height, width = region_labels.shape
-    edges: set[tuple[FloatPoint, FloatPoint]] = set()
-    for y, x in np.argwhere(region_labels[:, :-1] != region_labels[:, 1:]):
-        start = (float(x + 1), float(y))
-        end = (float(x + 1), float(y + 1))
-        edges.add(_canonical_edge(start, end))
-    for y, x in np.argwhere(region_labels[:-1, :] != region_labels[1:, :]):
-        start = (float(x), float(y + 1))
-        end = (float(x + 1), float(y + 1))
-        edges.add(_canonical_edge(start, end))
-    for x in range(width):
-        edges.add(_canonical_edge((float(x), 0.0), (float(x + 1), 0.0)))
-        edges.add(
-            _canonical_edge(
-                (float(x), float(height)),
-                (float(x + 1), float(height)),
-            )
-        )
-    for y in range(height):
-        edges.add(_canonical_edge((0.0, float(y)), (0.0, float(y + 1))))
-        edges.add(
-            _canonical_edge(
-                (float(width), float(y)),
-                (float(width), float(y + 1)),
-            )
-        )
-
-    output: list[list[FloatPoint]] = []
-    for path in _trace_unique_edges(edges):
-        points = np.asarray(path, dtype=np.float64)
-        if simplify_tolerance_px > 0 and len(points) >= 4:
-            points = measure.approximate_polygon(points, tolerance=simplify_tolerance_px)
-        smoothed = [(float(x), float(y)) for x, y in points]
-        if smoothing_iterations > 0 and len(smoothed) >= 6:
-            closed = smoothed[0] == smoothed[-1]
-            if closed:
-                smoothed = _smooth_loop(smoothed[:-1], min(1, smoothing_iterations), 0.0)
-                smoothed.append(smoothed[0])
-        if len(smoothed) >= 2:
-            output.append(smoothed)
-    return output
-
-
-def _polyline_path(points: list[FloatPoint]) -> str:
-    if len(points) < 2:
-        return ""
-    return " ".join(
-        [f"M {_format_number(points[0][0])} {_format_number(points[0][1])}"]
-        + [f"L {_format_number(x)} {_format_number(y)}" for x, y in points[1:]]
-    )
-
-
-def _line_art_svg_paths(result: PipelineResult, tolerance_px: float) -> list[str]:
-    if result.line_art_mask is None:
-        return []
-    paths: list[str] = []
-    for polyline in trace_skeleton_polylines(result.line_art_mask):
-        points = np.asarray(polyline, dtype=np.float64)
-        if tolerance_px > 0 and len(points) >= 4:
-            points = measure.approximate_polygon(points, tolerance=max(0.25, tolerance_px * 0.55))
-        path_data = _polyline_path([(float(x), float(y)) for x, y in points])
-        if path_data:
-            paths.append(path_data)
-    return paths
-
 def build_svg(result: PipelineResult, colored: bool) -> str:
     """Construit le modèle coloré ou la feuille de coloriage numérotée."""
     geometry = result.print_geometry
     render_profile = adaptive_render_profile(result)
     stroke_px = render_profile.line_width_mm / geometry.mm_per_pixel
-
-    fills: list[str] = []
+    paths: list[str] = []
     for region in result.regions_after:
         path_data = region_svg_path(
             result.region_labels_after,
@@ -459,40 +295,19 @@ def build_svg(result: PipelineResult, colored: bool) -> str:
             (region.min_x, region.min_y, region.max_x, region.max_y),
             smoothing_iterations=render_profile.smoothing_iterations,
             min_smooth_area_px=render_profile.min_smooth_area_px,
-            simplify_tolerance_px=render_profile.simplify_tolerance_px,
         )
         if not path_data:
             continue
-        fill = _hex(result.palette_rgb[region.palette_index]) if colored else "white"
-        fills.append(
-            f'<path d="{path_data}" fill="{fill}" fill-rule="evenodd" stroke="none"/>'
+        fill = (
+            _hex(result.palette_rgb[region.palette_index])
+            if colored
+            else "white"
         )
-
-    boundary_paths = [
-        _polyline_path(path)
-        for path in shared_boundary_polylines(
-            result.region_labels_after,
-            smoothing_iterations=render_profile.smoothing_iterations,
-            simplify_tolerance_px=render_profile.simplify_tolerance_px,
+        paths.append(
+            f'<path d="{path_data}" fill="{fill}" fill-rule="evenodd" '
+            f'stroke="black" stroke-width="{stroke_px:.5f}" '
+            'stroke-linejoin="round" stroke-linecap="round"/>'
         )
-    ]
-    boundaries = [
-        f'<path d="{path}" fill="none" stroke="black" '
-        f'stroke-width="{stroke_px:.5f}" stroke-linejoin="round" '
-        'stroke-linecap="round"/>'
-        for path in boundary_paths
-        if path
-    ]
-
-    internal_details: list[str] = []
-    if not colored:
-        internal_width = max(0.45, stroke_px * 0.58)
-        internal_details = [
-            f'<path d="{path}" fill="none" stroke="#333" '
-            f'stroke-width="{internal_width:.5f}" stroke-linejoin="round" '
-            'stroke-linecap="round" opacity="0.82"/>'
-            for path in _line_art_svg_paths(result, render_profile.simplify_tolerance_px)
-        ]
 
     labels: list[str] = []
     if not colored:
@@ -500,14 +315,12 @@ def build_svg(result: PipelineResult, colored: bool) -> str:
             if placement.status != "placed":
                 continue
             font_px = placement.font_size_mm / geometry.mm_per_pixel
-            halo_px = max(0.65, font_px * 0.22)
             labels.append(
                 f'<text x="{placement.x_px:.3f}" y="{placement.y_px:.3f}" '
-                'font-family="Arial, Helvetica, sans-serif" '
+                f'font-family="Arial, Helvetica, sans-serif" '
                 f'font-size="{font_px:.4f}" text-anchor="middle" '
-                'dominant-baseline="central" fill="#222" paint-order="stroke" '
-                f'stroke="white" stroke-width="{halo_px:.4f}" stroke-linejoin="round">'
-                f'{placement.number}</text>'
+                'dominant-baseline="central" fill="#222">'
+                f"{placement.number}</text>"
             )
 
     subject_outline = ""
@@ -519,12 +332,11 @@ def build_svg(result: PipelineResult, colored: bool) -> str:
             (0, 0, mask_labels.shape[1] - 1, mask_labels.shape[0] - 1),
             smoothing_iterations=render_profile.smoothing_iterations,
             min_smooth_area_px=render_profile.min_smooth_area_px,
-            simplify_tolerance_px=render_profile.simplify_tolerance_px,
         )
         if mask_path:
             subject_outline = (
                 f'<path d="{mask_path}" fill="none" fill-rule="evenodd" '
-                f'stroke="black" stroke-width="{stroke_px * 1.55:.5f}" '
+                f'stroke="black" stroke-width="{stroke_px * 1.8:.5f}" '
                 'stroke-linejoin="round" stroke-linecap="round"/>'
             )
 
@@ -551,9 +363,6 @@ def build_svg(result: PipelineResult, colored: bool) -> str:
         if result.config.palette_layout == "separate"
         else _legend_svg(result, colored=True) + "\n"
     )
-    layers = [*fills, *boundaries, *internal_details, *labels]
-    if subject_outline:
-        layers.append(subject_outline)
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{page_width}mm" '
@@ -562,12 +371,13 @@ def build_svg(result: PipelineResult, colored: bool) -> str:
         '<rect width="100%" height="100%" fill="white"/>\n'
         + title_text
         + f'<g transform="{transform}">\n'
-        + "\n".join(layers)
+        + "\n".join(paths)
+        + ("\n" + "\n".join(labels) if labels else "")
+        + ("\n" + subject_outline if subject_outline else "")
         + "\n</g>\n"
         + legend
         + "\n</svg>\n"
     )
-
 
 
 def build_palette_svg(result: PipelineResult) -> str:

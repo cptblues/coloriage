@@ -90,8 +90,7 @@ class LabelingTests(unittest.TestCase):
         labels = np.ones((4, 6), dtype=np.uint32)
         labels[:, 3:] = 2
         path = region_svg_path(labels, 1, (0, 0, 2, 3))
-        self.assertIn("M ", path)
-        self.assertRegex(path, r"\b[0-9]+\.5\b")
+        self.assertIn("M 0 0", path)
         self.assertIn("Z", path)
 
     def test_svg_path_can_smooth_large_irregular_contours(self) -> None:

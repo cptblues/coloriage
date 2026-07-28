@@ -201,28 +201,6 @@ def _palette_layout_config(value: object) -> str:
     return "inline" if str(value).lower() == "inline" else "separate"
 
 
-
-def _clamp_float(
-    value: object,
-    minimum: float,
-    maximum: float,
-    default: float,
-) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, min(maximum, parsed))
-
-
-def _bool_config(value: object, default: bool = True) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() not in {"0", "false", "non", "off"}
-
-
 def _smooth_points(
     points: list[tuple[float, float]],
     *,
@@ -401,13 +379,6 @@ def _config_from_payload(
         detail_min_region_area_mm2=float(preset["detail_min_region_area_mm2"]),
         auto_tune=True,
         contour_smoothing_iterations=int(preset["contour_smoothing_iterations"]),
-        contour_simplify_mm=_clamp_float(payload.get("contourSimplifyMm"), 0.0, 0.5, 0.10),
-        preprocess_sigma_color=0.055,
-        preprocess_sigma_spatial=3.0,
-        palette_merge_delta_e=_clamp_float(payload.get("paletteMergeDeltaE"), 0.0, 12.0, 4.0),
-        thin_merge_passes=_clamp_int(payload.get("thinMergePasses"), 0, 5, 2),
-        line_art_enabled=_bool_config(payload.get("lineArtEnabled"), True),
-        line_art_detail=_clamp_float(payload.get("lineArtDetail"), 0.0, 1.0, 0.65),
         title=str(payload.get("title") or "Mon coloriage mystère"),
     )
 

@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--segmentation",
-        choices=("components", "slic", "slic_legacy"),
+        choices=("components", "slic"),
         default="slic",
         help="Baseline par composantes ou segmentation SLIC (défaut : slic)",
     )
@@ -133,35 +133,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.25,
         help="Épaisseur des contours SVG imprimés (défaut : 0,25 mm)",
-    )
-    parser.add_argument(
-        "--palette-merge-delta-e",
-        type=float,
-        default=4.0,
-        help="Fusion perceptuelle des couleurs proches (défaut : 4,0)",
-    )
-    parser.add_argument(
-        "--contour-simplify-mm",
-        type=float,
-        default=0.10,
-        help="Tolérance physique de simplification vectorielle",
-    )
-    parser.add_argument(
-        "--thin-merge-passes",
-        type=int,
-        default=2,
-        help="Passages de fusion des zones trop étroites",
-    )
-    parser.add_argument(
-        "--line-art-detail",
-        type=float,
-        default=0.65,
-        help="Densité des détails internes, de 0 à 1",
-    )
-    parser.add_argument(
-        "--no-line-art",
-        action="store_true",
-        help="Désactive le calque de détails internes",
     )
     parser.add_argument(
         "--subject-mode",
@@ -282,11 +253,6 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
         min_number_font_mm=args.min_number_font_mm,
         number_padding_mm=args.number_padding_mm,
         line_width_mm=args.line_width_mm,
-        palette_merge_delta_e=args.palette_merge_delta_e,
-        contour_simplify_mm=args.contour_simplify_mm,
-        thin_merge_passes=args.thin_merge_passes,
-        line_art_enabled=not args.no_line_art,
-        line_art_detail=args.line_art_detail,
         subject_mode=subject_mode,
         subject_mask_path=str(args.subject_mask) if args.subject_mask else None,
         ai_model=args.ai_model,

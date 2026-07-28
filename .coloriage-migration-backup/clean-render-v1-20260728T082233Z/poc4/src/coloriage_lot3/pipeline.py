@@ -20,10 +20,6 @@ from .geometry import (
     compute_print_geometry,
 )
 from .labeling import LabelPlacement, place_region_labels
-from .lineart import build_line_art_mask
-from .palette import merge_near_palette_colors
-from .preprocessing import prepare_processing_image
-from .quality import improve_region_labelability
 from .regions import (
     AdjacencyEdge,
     MergeEvent,
@@ -64,13 +60,6 @@ class PipelineConfig:
     auto_tune: bool = False
     contour_smoothing_iterations: int = 1
     min_contour_smooth_area_px: float = 18.0
-    contour_simplify_mm: float = 0.10
-    preprocess_sigma_color: float = 0.055
-    preprocess_sigma_spatial: float = 3.0
-    palette_merge_delta_e: float = 4.0
-    thin_merge_passes: int = 2
-    line_art_enabled: bool = True
-    line_art_detail: float = 0.65
     subject_mode: str = "none"
     subject_mask_path: str | None = None
     ai_model: str = "birefnet-general"
@@ -93,10 +82,8 @@ class PipelineConfig:
             raise ValueError("sample_pixels doit être supérieur au nombre de couleurs")
         if self.connectivity not in (4, 8):
             raise ValueError("connectivity doit valoir 4 ou 8")
-        if self.segmentation not in ("components", "slic", "slic_legacy"):
-            raise ValueError(
-                "segmentation doit valoir components, slic ou slic_legacy"
-            )
+        if self.segmentation not in ("components", "slic"):
+            raise ValueError("segmentation doit valoir components ou slic")
         if not 10 <= self.superpixels <= 20_000:
             raise ValueError("superpixels doit être compris entre 10 et 20000")
         if self.compactness <= 0:
@@ -131,18 +118,6 @@ class PipelineConfig:
             )
         if self.min_contour_smooth_area_px < 0:
             raise ValueError("min_contour_smooth_area_px doit être positif ou nul")
-        if not 0.0 <= self.contour_simplify_mm <= 1.0:
-            raise ValueError("contour_simplify_mm doit être compris entre 0 et 1")
-        if not 0.001 <= self.preprocess_sigma_color <= 0.25:
-            raise ValueError("preprocess_sigma_color doit être compris entre 0,001 et 0,25")
-        if not 0.25 <= self.preprocess_sigma_spatial <= 12.0:
-            raise ValueError("preprocess_sigma_spatial doit être compris entre 0,25 et 12")
-        if not 0.0 <= self.palette_merge_delta_e <= 20.0:
-            raise ValueError("palette_merge_delta_e doit être compris entre 0 et 20")
-        if not 0 <= self.thin_merge_passes <= 5:
-            raise ValueError("thin_merge_passes doit être compris entre 0 et 5")
-        if not 0.0 <= self.line_art_detail <= 1.0:
-            raise ValueError("line_art_detail doit être compris entre 0 et 1")
         if self.subject_mode not in ("none", "ai", "manual"):
             raise ValueError("subject_mode doit valoir none, ai ou manual")
         if self.subject_mode != "none" and self.colors < 4:
@@ -199,8 +174,6 @@ class PipelineResult:
     subject_metadata: dict[str, Any]
     detail_mask: NDArray[np.bool_] | None
     detail_metadata: dict[str, Any]
-    line_art_mask: NDArray[np.bool_] | None
-    line_art_metadata: dict[str, Any]
     config: PipelineConfig
 
 
@@ -474,25 +447,10 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
     timings["detail_mask"] = (time.perf_counter() - start) * 1000.0
 
     start = time.perf_counter()
-    processing_rgb, processing_metadata = prepare_processing_image(
-        normalized_rgb,
-        subject_mask=subject_mask,
-        detail_mask=detail_mask,
-        sigma_color=config.preprocess_sigma_color,
-        sigma_spatial=config.preprocess_sigma_spatial,
-    )
-    source_metadata["processing"] = processing_metadata
-    lab_image = rgb_to_lab(processing_rgb)
+    lab_image = rgb_to_lab(normalized_rgb)
     pixels_lab = lab_image.reshape(-1, 3)
-    palette_cleanup: dict[str, Any]
     if subject_mask is None:
         palette_lab, flat_labels = _fit_palette(pixels_lab, config)
-        palette_lab, flat_labels, palette_cleanup = merge_near_palette_colors(
-            palette_lab,
-            flat_labels,
-            threshold=config.palette_merge_delta_e,
-            minimum_colors=2,
-        )
         subject_palette_size = 0
     else:
         flat_mask = subject_mask.ravel()
@@ -505,43 +463,22 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
             config,
             requested_colors=subject_requested,
         )
-        subject_lab, subject_labels, subject_cleanup = merge_near_palette_colors(
-            subject_lab,
-            subject_labels,
-            threshold=config.palette_merge_delta_e,
-            minimum_colors=2,
-        )
         background_lab, background_labels = _fit_palette(
             pixels_lab[~flat_mask],
             config,
             requested_colors=background_requested,
-        )
-        background_lab, background_labels, background_cleanup = merge_near_palette_colors(
-            background_lab,
-            background_labels,
-            threshold=config.palette_merge_delta_e,
-            minimum_colors=2,
         )
         subject_palette_size = len(subject_lab)
         palette_lab = np.concatenate([subject_lab, background_lab], axis=0)
         flat_labels = np.empty(len(pixels_lab), dtype=np.int32)
         flat_labels[flat_mask] = subject_labels
         flat_labels[~flat_mask] = background_labels + subject_palette_size
-        palette_cleanup = {
-            "subject": subject_cleanup,
-            "background": background_cleanup,
-            "before": int(subject_cleanup["before"] + background_cleanup["before"]),
-            "after": int(subject_cleanup["after"] + background_cleanup["after"]),
-            "merged": int(subject_cleanup["merged"] + background_cleanup["merged"]),
-            "threshold": float(config.palette_merge_delta_e),
-        }
         subject_metadata.update(
             {
                 "subject_colors": int(subject_palette_size),
                 "background_colors": int(len(background_lab)),
             }
         )
-    source_metadata["palette_cleanup"] = palette_cleanup
     palette_labels = flat_labels.reshape(normalized_rgb.shape[:2])
     palette_rgb = lab_to_rgb(palette_lab)
     quantized_rgb = palette_rgb[palette_labels]
@@ -550,7 +487,7 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
     start = time.perf_counter()
     if subject_mask is None and detail_mask is None:
         segmented_palette_labels = segment_palette_labels(
-            normalized_rgb=processing_rgb,
+            normalized_rgb=normalized_rgb,
             palette_labels=palette_labels,
             palette_size=len(palette_rgb),
             method=config.segmentation,
@@ -560,7 +497,7 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         )
     else:
         fine_segmented = segment_palette_labels(
-            normalized_rgb=processing_rgb,
+            normalized_rgb=normalized_rgb,
             palette_labels=palette_labels,
             palette_size=len(palette_rgb),
             method=config.segmentation,
@@ -569,7 +506,7 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
             smoothing_radius=config.smoothing_radius,
         )
         coarse_segmented = segment_palette_labels(
-            normalized_rgb=processing_rgb,
+            normalized_rgb=normalized_rgb,
             palette_labels=palette_labels,
             palette_size=len(palette_rgb),
             method=config.segmentation,
@@ -696,35 +633,6 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
     )
     region_labels_after = merge_result.region_labels
     region_palette_after = merge_result.region_palette
-    clean_merge = improve_region_labelability(
-        region_labels=region_labels_after,
-        region_palette=region_palette_after,
-        palette_lab=palette_lab,
-        mm_per_pixel=geometry.mm_per_pixel,
-        min_region_pixels=geometry.min_region_pixels,
-        min_region_area_mm2=config.min_region_area_mm2,
-        preferred_font_mm=config.number_font_mm,
-        min_font_mm=config.min_number_font_mm,
-        padding_mm=config.number_padding_mm,
-        strategy=config.merge_strategy,
-        color_tolerance=config.color_tolerance,
-        subject_mask=subject_mask,
-        passes=config.thin_merge_passes,
-    )
-    region_labels_after = clean_merge.region_labels
-    region_palette_after = clean_merge.region_palette
-    merge_events = [
-        *merge_result.events,
-        *(
-            replace(event, step=len(merge_result.events) + index + 1)
-            for index, event in enumerate(clean_merge.events)
-        ),
-    ]
-    forced_merges = merge_result.forced_merges + clean_merge.forced_merges
-    source_metadata["clean_merge"] = {
-        "passes_executed": clean_merge.passes_executed,
-        "extra_merges": len(clean_merge.events),
-    }
     merged_palette_labels = region_palette_after[region_labels_after]
     merged_rgb = palette_rgb[merged_palette_labels]
     adjacency_after = build_adjacency(region_labels_after)
@@ -732,18 +640,6 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         np.count_nonzero(merged_palette_labels != segmented_palette_labels)
     )
     timings["graph_and_merge"] = (time.perf_counter() - start) * 1000.0
-    line_art_mask: NDArray[np.bool_] | None = None
-    line_art_metadata: dict[str, Any] = {"enabled": False}
-    if config.line_art_enabled:
-        line_start = time.perf_counter()
-        line_art_mask, line_art_metadata = build_line_art_mask(
-            processing_rgb,
-            subject_mask=subject_mask,
-            detail_mask=detail_mask,
-            region_labels=region_labels_after,
-            detail_strength=config.line_art_detail,
-        )
-        timings["line_art"] = (time.perf_counter() - line_start) * 1000.0
 
     start = time.perf_counter()
     regions_before = describe_regions(
@@ -773,7 +669,7 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
     timings["total"] = (time.perf_counter() - total_start) * 1000.0
 
     return PipelineResult(
-        normalized_rgb=processing_rgb,
+        normalized_rgb=normalized_rgb,
         quantized_rgb=quantized_rgb,
         segmented_rgb=segmented_rgb,
         merged_rgb=merged_rgb,
@@ -791,8 +687,8 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         label_placements=label_placements,
         adjacency_before=adjacency_before,
         adjacency_after=adjacency_after,
-        merge_events=merge_events,
-        forced_merges=forced_merges,
+        merge_events=merge_result.events,
+        forced_merges=merge_result.forced_merges,
         recolored_pixels=recolored_pixels,
         print_geometry=geometry,
         timings_ms=timings,
@@ -801,7 +697,5 @@ def run_pipeline(input_path: str | Path, config: PipelineConfig) -> PipelineResu
         subject_metadata=subject_metadata,
         detail_mask=detail_mask,
         detail_metadata=detail_metadata,
-        line_art_mask=line_art_mask,
-        line_art_metadata=line_art_metadata,
         config=config,
     )

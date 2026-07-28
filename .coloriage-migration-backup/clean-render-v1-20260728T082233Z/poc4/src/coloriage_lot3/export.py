@@ -12,10 +12,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy import ndimage
 
-from .lineart import trace_skeleton_polylines
 from .pipeline import PipelineResult
 from .regions import AdjacencyEdge, Region, make_region_preview
-from .svg import adaptive_render_profile, save_svgs, shared_boundary_polylines
+from .svg import adaptive_render_profile, region_contour_loops, save_svgs
 from .subject import mask_overlay
 
 
@@ -126,7 +125,6 @@ def build_stats(result: PipelineResult) -> dict[str, Any]:
         "source": result.source_metadata,
         "subject": subject_stats,
         "detail": detail_stats,
-        "line_art": dict(result.line_art_metadata),
         "parameters": asdict(result.config),
         "print_geometry": asdict(result.print_geometry),
         "result": {
@@ -173,7 +171,6 @@ def build_stats(result: PipelineResult) -> dict[str, Any]:
                 "smoothing_iterations": render_profile.smoothing_iterations,
                 "min_smooth_area_px": render_profile.min_smooth_area_px,
                 "preview_supersampling": render_profile.preview_supersampling,
-                "simplify_tolerance_px": render_profile.simplify_tolerance_px,
             },
         },
         "timings_ms": {
@@ -366,50 +363,39 @@ def _draw_print_contours(
     geometry = result.print_geometry
     render_profile = adaptive_render_profile(result)
     line_width_px = max(1, round(render_profile.line_width_mm * pixels_per_mm))
-    for polyline in shared_boundary_polylines(
-        result.region_labels_after,
-        smoothing_iterations=render_profile.smoothing_iterations,
-        simplify_tolerance_px=render_profile.simplify_tolerance_px,
-    ):
-        if len(polyline) < 2:
-            continue
-        points = [
-            (
-                (geometry.image_origin_x_mm + x_px * geometry.mm_per_pixel)
-                * pixels_per_mm,
-                (geometry.image_origin_y_mm + y_px * geometry.mm_per_pixel)
-                * pixels_per_mm,
+    for region in result.regions_after:
+        loops = region_contour_loops(
+            result.region_labels_after,
+            region.region_id,
+            (region.min_x, region.min_y, region.max_x, region.max_y),
+            smoothing_iterations=render_profile.smoothing_iterations,
+            min_smooth_area_px=render_profile.min_smooth_area_px,
+        )
+        for loop in loops:
+            if len(loop) < 2:
+                continue
+            points = [
+                (
+                    (
+                        geometry.image_origin_x_mm
+                        + x_px * geometry.mm_per_pixel
+                    )
+                    * pixels_per_mm,
+                    (
+                        geometry.image_origin_y_mm
+                        + y_px * geometry.mm_per_pixel
+                    )
+                    * pixels_per_mm,
+                )
+                for x_px, y_px in loop
+            ]
+            draw.line(
+                points + [points[0]],
+                fill="black",
+                width=line_width_px,
+                joint="curve",
             )
-            for x_px, y_px in polyline
-        ]
-        draw.line(points, fill="black", width=line_width_px, joint="curve")
 
-
-
-
-def _draw_line_art(
-    draw: ImageDraw.ImageDraw,
-    result: PipelineResult,
-    pixels_per_mm: float,
-) -> None:
-    if result.line_art_mask is None:
-        return
-    geometry = result.print_geometry
-    render_profile = adaptive_render_profile(result)
-    width = max(1, round(render_profile.line_width_mm * pixels_per_mm * 0.58))
-    for polyline in trace_skeleton_polylines(result.line_art_mask):
-        if len(polyline) < 2:
-            continue
-        points = [
-            (
-                (geometry.image_origin_x_mm + x_px * geometry.mm_per_pixel)
-                * pixels_per_mm,
-                (geometry.image_origin_y_mm + y_px * geometry.mm_per_pixel)
-                * pixels_per_mm,
-            )
-            for x_px, y_px in polyline
-        ]
-        draw.line(points, fill="#3a3a3a", width=width, joint="curve")
 
 def _make_print_preview(
     result: PipelineResult,
@@ -465,8 +451,6 @@ def _make_print_preview(
         )
         canvas.paste(panel, image_origin)
     _draw_print_contours(draw, result, pixels_per_mm)
-    if not colored:
-        _draw_line_art(draw, result, pixels_per_mm)
 
     if not colored:
         for placement in result.label_placements:
@@ -487,8 +471,6 @@ def _make_print_preview(
                 fill="#222222",
                 font=font,
                 anchor="mm",
-                stroke_width=max(1, round(placement.font_size_mm * pixels_per_mm * 0.18)),
-                stroke_fill="white",
             )
 
     if include_inline_palette:
